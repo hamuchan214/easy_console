@@ -318,15 +318,36 @@ fn connect_port(state: &mut AppState, serial_tx: mpsc::Sender<SerialEvent>) {
     }
 
     let config = state.serial_config.clone();
-    let config2 = state.serial_config.clone();
-    let port2 = port_path.clone();
+
+    // Open port once, then clone for writer
+    let port = match serialport::new(&port_path, config.baud_rate)
+        .data_bits(config.to_serialport_data_bits())
+        .parity(config.to_serialport_parity())
+        .stop_bits(config.to_serialport_stop_bits())
+        .flow_control(config.to_serialport_flow_control())
+        .timeout(std::time::Duration::from_millis(config.timeout_ms))
+        .open()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            state.set_status(format!("Failed to open port: {}", e), true);
+            state.connected = false;
+            return;
+        }
+    };
+    let writer_port = match port.try_clone() {
+        Ok(p) => p,
+        Err(e) => {
+            state.set_status(format!("Failed to clone port: {}", e), true);
+            state.connected = false;
+            return;
+        }
+    };
 
     // Start reader
     let reader_tx = serial_tx.clone();
-    let reader_port = port_path.clone();
-    let reader_config = config.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = serial::reader::start_reader(reader_port, reader_config, reader_tx.clone()) {
+        if let Err(e) = serial::reader::start_reader(port, reader_tx.clone()) {
             let _ = reader_tx.blocking_send(SerialEvent::Error(e.to_string()));
             let _ = reader_tx.blocking_send(SerialEvent::Disconnected);
         }
@@ -335,7 +356,7 @@ fn connect_port(state: &mut AppState, serial_tx: mpsc::Sender<SerialEvent>) {
     // Start writer
     let (tx_cmd_tx, tx_cmd_rx) = mpsc::channel::<TxCommand>(256);
     tokio::task::spawn_blocking(move || {
-        let _ = serial::writer::start_writer(port2, config2, tx_cmd_rx);
+        let _ = serial::writer::start_writer(writer_port, tx_cmd_rx);
     });
 
     // Set DTR/RTS if configured
