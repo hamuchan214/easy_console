@@ -425,17 +425,15 @@ fn process_rx_buffer(state: &mut AppState, buffer: &mut Vec<u8>) {
         return;
     }
 
-    let data = buffer.clone();
-    buffer.clear();
+    // Extract only complete lines; leave any incomplete trailing data in the buffer.
+    let (complete_lines, remainder) = extract_complete_lines(buffer, &state.rx_newline.clone());
+    *buffer = remainder;
 
-    // Split into lines based on rx_newline mode
-    let lines = split_rx_data(&data, &state.rx_newline.clone());
-    for line_bytes in lines {
+    for line_bytes in complete_lines {
         if line_bytes.is_empty() {
             continue;
         }
         let line = LogLine::new_rx(line_bytes.clone());
-        // Log to file
         if state.logging {
             if let Some(logger) = &mut state.file_logger {
                 let _ = logger.log_rx(&line_bytes);
@@ -445,49 +443,61 @@ fn process_rx_buffer(state: &mut AppState, buffer: &mut Vec<u8>) {
     }
 }
 
-fn split_rx_data(data: &[u8], mode: &NewlineMode) -> Vec<Vec<u8>> {
+/// Split `data` into complete lines and a remainder (incomplete trailing line).
+/// The remainder is kept in the buffer for the next tick.
+fn extract_complete_lines(data: &[u8], mode: &NewlineMode) -> (Vec<Vec<u8>>, Vec<u8>) {
     match mode {
-        NewlineMode::Auto => split_auto(data),
-        NewlineMode::CrLf => split_by(data, b"\r\n"),
-        NewlineMode::Lf => split_by_byte(data, b'\n'),
-        NewlineMode::Cr => split_by_byte(data, b'\r'),
-        NewlineMode::None_ => vec![data.to_vec()],
+        // In None_ mode there is no concept of lines; flush everything immediately.
+        NewlineMode::None_ => (vec![data.to_vec()], vec![]),
+        NewlineMode::Auto => extract_auto(data),
+        NewlineMode::CrLf => extract_by(data, b"\r\n"),
+        NewlineMode::Lf => extract_by_byte(data, b'\n'),
+        NewlineMode::Cr => extract_by_byte(data, b'\r'),
     }
 }
 
-fn split_auto(data: &[u8]) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    let mut current = Vec::new();
+fn extract_auto(data: &[u8]) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
     let mut i = 0;
     while i < data.len() {
-        if data[i] == b'\r' {
-            if i + 1 < data.len() && data[i + 1] == b'\n' {
-                lines.push(current.clone());
-                current.clear();
-                i += 2;
-            } else {
+        match data[i] {
+            b'\r' => {
+                if i + 1 < data.len() && data[i + 1] == b'\n' {
+                    // CRLF
+                    lines.push(current.clone());
+                    current.clear();
+                    i += 2;
+                } else if i + 1 == data.len() {
+                    // Lone \r at the very end — might be the start of \r\n;
+                    // keep it in the remainder so the next chunk can decide.
+                    return (lines, vec![b'\r']);
+                } else {
+                    // Lone \r in the middle
+                    lines.push(current.clone());
+                    current.clear();
+                    i += 1;
+                }
+            }
+            b'\n' => {
                 lines.push(current.clone());
                 current.clear();
                 i += 1;
             }
-        } else if data[i] == b'\n' {
-            lines.push(current.clone());
-            current.clear();
-            i += 1;
-        } else {
-            current.push(data[i]);
-            i += 1;
+            b => {
+                current.push(b);
+                i += 1;
+            }
         }
     }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+    // `current` holds an incomplete (not yet newline-terminated) line.
+    // Return it as the remainder so it stays in the buffer.
+    (lines, current)
 }
 
-fn split_by(data: &[u8], sep: &[u8]) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    let mut current = Vec::new();
+fn extract_by(data: &[u8], sep: &[u8]) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
     let mut i = 0;
     while i < data.len() {
         if i + sep.len() <= data.len() && &data[i..i + sep.len()] == sep {
@@ -499,15 +509,12 @@ fn split_by(data: &[u8], sep: &[u8]) -> Vec<Vec<u8>> {
             i += 1;
         }
     }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+    (lines, current)
 }
 
-fn split_by_byte(data: &[u8], sep: u8) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    let mut current = Vec::new();
+fn extract_by_byte(data: &[u8], sep: u8) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
     for &b in data {
         if b == sep {
             lines.push(current.clone());
@@ -516,10 +523,7 @@ fn split_by_byte(data: &[u8], sep: u8) -> Vec<Vec<u8>> {
             current.push(b);
         }
     }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
+    (lines, current)
 }
 
 fn handle_serial_event(state: &mut AppState, event: SerialEvent, rx_buffer: &mut Vec<u8>) {

@@ -89,15 +89,18 @@ pub struct LogLine {
 
 impl LogLine {
     pub fn new_rx(raw: Vec<u8>) -> Self {
-        let text = raw.iter().map(|&b| {
-            if b == b'\r' || b == b'\n' {
-                '\n'
-            } else if b < 0x20 && b != b'\t' {
-                '·'
-            } else {
-                b as char
-            }
-        }).collect::<String>();
+        let text = String::from_utf8_lossy(&raw)
+            .chars()
+            .map(|c| {
+                if c == '\r' || c == '\n' {
+                    '↵'
+                } else if (c as u32) < 0x20 && c != '\t' {
+                    '·'
+                } else {
+                    c
+                }
+            })
+            .collect();
         Self {
             direction: Direction::Rx,
             timestamp: Local::now(),

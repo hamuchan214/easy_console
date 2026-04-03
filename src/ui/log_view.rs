@@ -26,7 +26,7 @@ fn format_ascii_line(line: &LogLine, show_timestamp: bool, is_match: bool) -> Li
         Dir::Tx => "< ",
         Dir::System => "* ",
     };
-    let text = line.text.replace('\n', "↵").replace('\r', "");
+    let text = line.text.replace('\n', "↵").replace('\r', "↵");
     let full = format!("{}{}{}", ts, dir_str, text);
 
     let color = line_color(&line.direction);
