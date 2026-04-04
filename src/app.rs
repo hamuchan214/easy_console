@@ -352,7 +352,6 @@ impl AppState {
             .unwrap_or_default()
             .into_iter()
             .map(|p| p.port_name)
-            .filter(|p| p.contains("cu.") || p.contains("tty.") || p.starts_with("/dev/"))
             .collect();
         self.available_ports.sort();
     }
