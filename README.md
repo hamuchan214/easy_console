@@ -4,7 +4,10 @@ Rust製のシリアルコンソールです。macOSで動きます。たぶんWi
 
 普通のシリアルコンソール（minicomとかscreen）は設定がめんどくさかったり、見た目がいまいちだったりするので自分で作りました。
 
+<img width="1470" height="956" alt="スクリーンショット 2026-04-06 17 56 25" src="https://github.com/user-attachments/assets/5556628b-542b-437b-b63c-c79759e9ab51" />
+
 ## インストール
+
 
 ```bash
 git clone https://github.com/hamuchan214/easy_console
@@ -43,7 +46,11 @@ easy_console -p /dev/cu.usbserial-0001 -b 115200
 | / | ログ内検索 |
 | Ctrl+Q | 終了 |
 
+<img width="1470" height="956" alt="スクリーンショット 2026-04-06 17 56 39" src="https://github.com/user-attachments/assets/9e6d9277-0593-47a7-bad0-70016d8169a6" />
+<img width="1470" height="956" alt="スクリーンショット 2026-04-06 17 56 51" src="https://github.com/user-attachments/assets/2aa88a6c-878c-4575-80bd-bfdf07c0676a" />
+
 ## 設定ファイル
+
 
 `~/.config/easy_console/profiles.toml` にプロファイルを書いておくと便利です。
 
