@@ -12,7 +12,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
     f.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Settings (↑↓=Navigate, Enter=Edit, Esc=Close) ")
+        .title(" Settings (↑↓=Navigate, ←/Enter/→=Change, Esc=Close) ")
         .borders(Borders::ALL)
         .style(Style::default().fg(Color::White).bg(Color::DarkGray));
 

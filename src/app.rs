@@ -1,4 +1,6 @@
 use chrono::{DateTime, Local};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::mpsc;
 use crate::serial::{SerialConfig, TxCommand, ControlSignals};
 use crate::macros::Macro;
@@ -207,6 +209,7 @@ pub struct AppState {
 
     // Serial channels
     pub tx_sender: Option<mpsc::Sender<TxCommand>>,
+    pub reader_cancel: Option<Arc<AtomicBool>>,
     pub connected: bool,
     pub status_message: String,
     pub status_is_error: bool,
@@ -253,6 +256,7 @@ impl AppState {
             settings_field_index: 0,
             macro_select_index: 0,
             tx_sender: None,
+            reader_cancel: None,
             connected: false,
             status_message: "Ready. Press F2 to select port.".to_string(),
             status_is_error: false,

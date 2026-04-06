@@ -312,9 +312,16 @@ fn connect_port(state: &mut AppState, serial_tx: mpsc::Sender<SerialEvent>) {
         }
     };
 
-    // Disconnect existing
+    // Cancel existing reader and close writer
+    if let Some(cancel) = state.reader_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some(sender) = state.tx_sender.take() {
         let _ = sender.try_send(TxCommand::Close);
+    }
+    // Give the old tasks a moment to release the port
+    if state.connected {
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
     let config = state.serial_config.clone();
@@ -344,10 +351,12 @@ fn connect_port(state: &mut AppState, serial_tx: mpsc::Sender<SerialEvent>) {
         }
     };
 
-    // Start reader
+    // Start reader with a cancellation flag
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state.reader_cancel = Some(cancel.clone());
     let reader_tx = serial_tx.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = serial::reader::start_reader(port, reader_tx.clone()) {
+        if let Err(e) = serial::reader::start_reader(port, reader_tx.clone(), cancel) {
             let _ = reader_tx.blocking_send(SerialEvent::Error(e.to_string()));
             let _ = reader_tx.blocking_send(SerialEvent::Disconnected);
         }
@@ -829,10 +838,16 @@ fn handle_popup_key(
                 }
             }
             KeyCode::Enter | KeyCode::Right => {
-                cycle_settings_field(state, false);
+                let needs_reconnect = cycle_settings_field(state, false);
+                if needs_reconnect && state.connected {
+                    connect_port(state, serial_tx);
+                }
             }
             KeyCode::Left => {
-                cycle_settings_field(state, true);
+                let needs_reconnect = cycle_settings_field(state, true);
+                if needs_reconnect && state.connected {
+                    connect_port(state, serial_tx);
+                }
             }
             _ => {}
         },
@@ -866,11 +881,13 @@ fn handle_popup_key(
     false
 }
 
-fn cycle_settings_field(state: &mut AppState, reverse: bool) {
+/// Returns true if the changed setting requires the serial port to be reconnected.
+fn cycle_settings_field(state: &mut AppState, reverse: bool) -> bool {
     let baud_rates = [
         300u32, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600,
     ];
     match state.settings_field_index {
+        // --- Port-critical settings: require reconnect ---
         0 => {
             let current = state.serial_config.baud_rate;
             let pos = baud_rates.iter().position(|&b| b == current).unwrap_or(8);
@@ -880,55 +897,50 @@ fn cycle_settings_field(state: &mut AppState, reverse: bool) {
                 (pos + 1) % baud_rates.len()
             };
             state.serial_config.baud_rate = baud_rates[next_pos];
+            true
         }
         1 => {
             let bits = [5u8, 6, 7, 8];
-            let pos = bits
-                .iter()
-                .position(|&b| b == state.serial_config.data_bits)
-                .unwrap_or(3);
-            let next = if reverse {
-                if pos == 0 { 3 } else { pos - 1 }
-            } else {
-                (pos + 1) % 4
-            };
+            let pos = bits.iter().position(|&b| b == state.serial_config.data_bits).unwrap_or(3);
+            let next = if reverse { if pos == 0 { 3 } else { pos - 1 } } else { (pos + 1) % 4 };
             state.serial_config.data_bits = bits[next];
+            true
         }
         2 => {
             let parities = ["none", "odd", "even"];
-            let pos = parities
-                .iter()
-                .position(|&p| p == state.serial_config.parity.to_lowercase())
-                .unwrap_or(0);
-            let next = if reverse {
-                if pos == 0 { 2 } else { pos - 1 }
-            } else {
-                (pos + 1) % 3
-            };
+            let pos = parities.iter().position(|&p| p == state.serial_config.parity.to_lowercase()).unwrap_or(0);
+            let next = if reverse { if pos == 0 { 2 } else { pos - 1 } } else { (pos + 1) % 3 };
             state.serial_config.parity = parities[next].to_string();
+            true
         }
         3 => {
             state.serial_config.stop_bits = if state.serial_config.stop_bits == 1 { 2 } else { 1 };
+            true
         }
         4 => {
             let flows = ["none", "hardware", "software"];
-            let pos = flows
-                .iter()
-                .position(|&f| f == state.serial_config.flow_control.to_lowercase())
-                .unwrap_or(0);
-            let next = if reverse {
-                if pos == 0 { 2 } else { pos - 1 }
-            } else {
-                (pos + 1) % 3
-            };
+            let pos = flows.iter().position(|&f| f == state.serial_config.flow_control.to_lowercase()).unwrap_or(0);
+            let next = if reverse { if pos == 0 { 2 } else { pos - 1 } } else { (pos + 1) % 3 };
             state.serial_config.flow_control = flows[next].to_string();
+            true
         }
+        7 => {
+            // Timeout: bump by 50ms steps
+            if reverse {
+                state.serial_config.timeout_ms = state.serial_config.timeout_ms.saturating_sub(50).max(10);
+            } else {
+                state.serial_config.timeout_ms = (state.serial_config.timeout_ms + 50).min(5000);
+            }
+            true
+        }
+        // --- Signal lines: apply instantly via channel ---
         5 => {
             state.serial_config.dtr = !state.serial_config.dtr;
             state.signals.dtr = state.serial_config.dtr;
             if let Some(sender) = &state.tx_sender {
                 let _ = sender.try_send(TxCommand::SetDtr(state.serial_config.dtr));
             }
+            false
         }
         6 => {
             state.serial_config.rts = !state.serial_config.rts;
@@ -936,17 +948,47 @@ fn cycle_settings_field(state: &mut AppState, reverse: bool) {
             if let Some(sender) = &state.tx_sender {
                 let _ = sender.try_send(TxCommand::SetRts(state.serial_config.rts));
             }
+            false
         }
+        // --- Soft settings: take effect immediately in the event loop ---
         8 => {
             state.tx_newline = state.tx_newline.next_send();
+            false
+        }
+        9 => {
+            let modes = [
+                crate::app::NewlineMode::Auto,
+                crate::app::NewlineMode::CrLf,
+                crate::app::NewlineMode::Lf,
+                crate::app::NewlineMode::Cr,
+                crate::app::NewlineMode::None_,
+            ];
+            let pos = modes.iter().position(|m| m == &state.rx_newline).unwrap_or(0);
+            let next = if reverse { if pos == 0 { modes.len() - 1 } else { pos - 1 } } else { (pos + 1) % modes.len() };
+            state.rx_newline = modes[next].clone();
+            false
+        }
+        10 => {
+            state.view_mode = state.view_mode.next();
+            false
         }
         11 => {
             state.local_echo = !state.local_echo;
+            false
+        }
+        12 => {
+            if reverse {
+                state.scroll_buffer_size = state.scroll_buffer_size.saturating_sub(1000).max(1000);
+            } else {
+                state.scroll_buffer_size = (state.scroll_buffer_size + 1000).min(100_000);
+            }
+            false
         }
         13 => {
             state.show_timestamp = !state.show_timestamp;
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
